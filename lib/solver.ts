@@ -23,6 +23,8 @@ const SNAKE_ORDERS = [
 ];
 
 let memo = new Map<string, number>();
+let nodesVisited = 0;
+const MAX_SEARCH_NODES = 30_000;
 
 function getBoardHash(board: Board): string {
   return board.map((row) => row.join(",")).join("|");
@@ -30,6 +32,12 @@ function getBoardHash(board: Board): string {
 
 function evaluateLeaf(board: Board): number {
   if (isGameOver(board)) return GAME_OVER_SCORE;
+
+  // Strongly prefer states from which 10+10 can win on the next player move.
+  // This matters at search leaves, where a win may be just beyond the horizon.
+  for (const direction of DIRECTIONS) {
+    if (applyMove(board, direction).reached11) return WIN_SCORE / 2;
+  }
 
   let smoothness = 0;
   let mergePotential = 0;
@@ -53,16 +61,30 @@ function evaluateLeaf(board: Board): number {
       if (col < 3 && board[row][col + 1] !== 0) {
         const neighbor = board[row][col + 1];
         smoothness -= Math.abs(value - neighbor) * 1_500;
-        if (value === neighbor) mergePotential += value * 25_000;
       }
 
       if (row < 3 && board[row + 1][col] !== 0) {
         const neighbor = board[row + 1][col];
         smoothness -= Math.abs(value - neighbor) * 1_500;
-        if (value === neighbor) mergePotential += value * 25_000;
       }
     }
   }
+
+  // Reward equal tiles that can meet after a normal slide. Empty cells do not
+  // block a merge, so compare consecutive occupied values in each row/column.
+  // Higher-level pairs are worth more because they are closer to the target 11.
+  const scoreMergePairs = (values: number[]) => {
+    const occupied = values.filter((value) => value !== 0);
+    for (let index = 0; index < occupied.length - 1; index++) {
+      const current = occupied[index];
+      const next = occupied[index + 1];
+      if (current !== undefined && current === next) {
+        mergePotential += (current + 1) * (current + 1) * 5_000;
+      }
+    }
+  };
+  for (let row = 0; row < 4; row++) scoreMergePairs(board[row]);
+  for (let col = 0; col < 4; col++) scoreMergePairs(board.map((row) => row[col]));
 
   // Keep the strongest snake orientation; summing orientations would reward
   // the same tile multiple times and distort the evaluation scale.
@@ -142,6 +164,9 @@ function evaluateSpawn(boardAfterMove: Board, turnsRemaining: number): number {
   const cached = memo.get(hash);
   if (cached !== undefined) return cached;
 
+  // Bound the search work per recommendation. When the budget is exhausted,
+  // still model the current random spawn exactly, but stop expanding deeper turns.
+  const expandFutureTurns = nodesVisited++ < MAX_SEARCH_NODES;
   const emptyCells = getEmptyCells(boardAfterMove);
   if (emptyCells.length === 0) {
     const score = evaluateLeaf(boardAfterMove);
@@ -159,7 +184,7 @@ function evaluateSpawn(boardAfterMove: Board, turnsRemaining: number): number {
 
       // Evaluate only after the spawn completes the current turn. If more
       // turns remain, search the next player decision from this new board.
-      const value = turnsRemaining <= 1
+      const value = turnsRemaining <= 1 || !expandFutureTurns
         ? evaluateLeaf(nextBoard)
         : chooseMoveValue(nextBoard, turnsRemaining - 1);
       expected += cellProbability * spawn.probability * value;
@@ -173,6 +198,9 @@ function evaluateSpawn(boardAfterMove: Board, turnsRemaining: number): number {
 /** Chooses the best move with a depth measured in complete turns. */
 function chooseMoveValue(board: Board, turnsRemaining: number): number {
   if (turnsRemaining <= 0 || isGameOver(board)) {
+    return evaluateLeaf(board);
+  }
+  if (nodesVisited++ >= MAX_SEARCH_NODES) {
     return evaluateLeaf(board);
   }
 
@@ -204,6 +232,7 @@ function chooseMoveValue(board: Board, turnsRemaining: number): number {
 
 export function getBestMove(board: Board): SolverResult {
   memo.clear();
+  nodesVisited = 0;
 
   if (isGameOver(board)) {
     return { bestMove: null, isGameOver: true };

@@ -32,7 +32,7 @@ export interface MoveResult {
 }
 
 export interface SolverResult {
-  bestMove: Direction;
+  bestMove: Direction | null;
   isGameOver: boolean;
 }
 

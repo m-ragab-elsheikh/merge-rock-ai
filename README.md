@@ -29,3 +29,14 @@ For a static export/deployment build, `next.config.ts` already uses `output: "ex
 ## Interface
 
 The UI intentionally stays minimal: board, suggested direction, spawn entry, Undo, and New Game.
+
+## Solver improvements (October 2026)
+
+- Board evaluation now compares four snake orientations and uses the best one, instead of forcing one fixed tile ordering.
+- Added a monotonicity penalty that discourages reversals in occupied row/column sequences.
+- Added a small corner bonus when the largest tile is in a corner.
+- Kept the existing Spawn model unchanged (values 1–5 at 20% each) because the original game's true distribution has not been verified.
+- Kept the lightweight Expectimax approach; Monte Carlo and uncalibrated confidence scores from the comparison bot were not copied.
+- Static export config does not set a GitHub Pages `basePath`, matching the confirmed Vercel deployment setup.
+
+These heuristic changes are initial candidates, not proof of improved win rate. Compare on a fixed set of boards and measure reaching Merge 11 before tuning weights further.

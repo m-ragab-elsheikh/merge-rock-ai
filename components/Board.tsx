@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Board as BoardType, SpawnValue, TILE_COLORS } from "@/types";
+import { Board as BoardType, Direction, SpawnValue, TILE_COLORS } from "@/types";
 
 type InputMode = "SETUP" | "SPAWN" | "NONE";
 
 interface BoardProps {
   board: BoardType;
-  bestMove?: string;
+  bestMove?: Direction | null;
   inputMode: InputMode;
   onCellEdit?: (row: number, col: number, value: number) => void;
 }

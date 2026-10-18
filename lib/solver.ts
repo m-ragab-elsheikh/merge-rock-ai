@@ -13,11 +13,13 @@ const SPAWN_VALUES: Array<{ value: SpawnValue; probability: number }> = [
 
 const WIN_SCORE = 1_000_000_000;
 const GAME_OVER_SCORE = -1_000_000_000;
-const WEIGHT_MATRIX = [
-  [15, 14, 13, 12],
-  [8, 9, 10, 11],
-  [7, 6, 5, 4],
-  [0, 1, 2, 3],
+// Evaluate four snake orientations instead of forcing the largest tile into
+// one fixed corner. These patterns are alternatives, not additive bonuses.
+const SNAKE_ORDERS = [
+  [15, 14, 13, 12, 8, 9, 10, 11, 7, 6, 5, 4, 0, 1, 2, 3],
+  [12, 13, 14, 15, 11, 10, 9, 8, 4, 5, 6, 7, 3, 2, 1, 0],
+  [0, 1, 2, 3, 7, 6, 5, 4, 8, 9, 10, 11, 15, 14, 13, 12],
+  [3, 2, 1, 0, 4, 5, 6, 7, 11, 10, 9, 8, 12, 13, 14, 15],
 ];
 
 let memo = new Map<string, number>();
@@ -29,19 +31,23 @@ function getBoardHash(board: Board): string {
 function evaluateLeaf(board: Board): number {
   if (isGameOver(board)) return GAME_OVER_SCORE;
 
-  let positional = 0;
   let smoothness = 0;
   let mergePotential = 0;
   let tenCount = 0;
   let maxTile = 0;
+  let maxTileRow = 0;
+  let maxTileCol = 0;
 
   for (let row = 0; row < 4; row++) {
     for (let col = 0; col < 4; col++) {
       const value = board[row][col];
       if (value === 0) continue;
 
-      maxTile = Math.max(maxTile, value);
-      positional += value * WEIGHT_MATRIX[row][col] * 200;
+      if (value > maxTile) {
+        maxTile = value;
+        maxTileRow = row;
+        maxTileCol = col;
+      }
       if (value === 10) tenCount += 1;
 
       if (col < 3 && board[row][col + 1] !== 0) {
@@ -58,57 +64,87 @@ function evaluateLeaf(board: Board): number {
     }
   }
 
+  // Keep the strongest snake orientation; summing orientations would reward
+  // the same tile multiple times and distort the evaluation scale.
+  let bestSnake = -Infinity;
+  for (const order of SNAKE_ORDERS) {
+    let score = 0;
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 4; col++) {
+        score += board[row][col] * order[row * 4 + col];
+      }
+    }
+    bestSnake = Math.max(bestSnake, score);
+  }
+  const snakeBonus = bestSnake * 2_000;
+
+  // Penalize reversals in each row/column. A line can be increasing OR
+  // decreasing; only the smaller directional variation is penalized.
+  // Empty cells are ignored so gaps do not create artificial gradients.
+  let monotonicityPenalty = 0;
+  const linePenalty = (values: number[]) => {
+    const occupied = values.filter((value) => value !== 0);
+    let increasing = 0;
+    let decreasing = 0;
+    for (let index = 0; index < occupied.length - 1; index++) {
+      const current = occupied[index];
+      const next = occupied[index + 1];
+      if (current === undefined || next === undefined) continue;
+      if (next > current) increasing += next - current;
+      else decreasing += current - next;
+    }
+    return Math.min(increasing, decreasing);
+  };
+  for (let row = 0; row < 4; row++) {
+    monotonicityPenalty += linePenalty(board[row]);
+  }
+  for (let col = 0; col < 4; col++) {
+    monotonicityPenalty += linePenalty(board.map((row) => row[col]));
+  }
+
   const emptyBonus = getEmptyCells(board).length * 35_000;
   const tenBonus = tenCount * 180_000;
   const maxTileBonus = maxTile * maxTile * 12_000;
+  const cornerBonus =
+    maxTile > 0 &&
+    ((maxTileRow === 0 || maxTileRow === 3) &&
+      (maxTileCol === 0 || maxTileCol === 3))
+      ? maxTile * 15_000
+      : 0;
 
-  return positional + smoothness + mergePotential + emptyBonus + tenBonus + maxTileBonus;
+  return (
+    snakeBonus +
+    smoothness +
+    mergePotential +
+    emptyBonus +
+    tenBonus +
+    maxTileBonus +
+    cornerBonus -
+    monotonicityPenalty * 2_000
+  );
 }
 
+// Depth is measured in complete player turns (move plus random spawn).
+// Full chance-node expansion is expensive, so keep the adaptive depth bounded.
 function searchDepth(emptyCount: number): number {
-  if (emptyCount <= 2) return 5;
-  if (emptyCount <= 5) return 4;
-  return 3;
+  if (emptyCount <= 2) return 4;
+  if (emptyCount <= 5) return 3;
+  return 2;
 }
 
-function expectimax(board: Board, depth: number, maximizing: boolean): number {
-  const hash = `${getBoardHash(board)}|${depth}|${maximizing ? "MAX" : "CHANCE"}`;
+/**
+ * Scores the random spawn that follows a player move.
+ * `turnsRemaining` counts complete player turns, including the move that
+ * has already happened and the spawn currently being evaluated.
+ */
+function evaluateSpawn(boardAfterMove: Board, turnsRemaining: number): number {
+  const hash = `${getBoardHash(boardAfterMove)}|SPAWN|T${turnsRemaining}`;
   const cached = memo.get(hash);
   if (cached !== undefined) return cached;
 
-  if (depth === 0) {
-    const score = evaluateLeaf(board);
-    memo.set(hash, score);
-    return score;
-  }
-
-  if (maximizing) {
-    let best = GAME_OVER_SCORE;
-
-    for (const direction of DIRECTIONS) {
-      const result = applyMove(board, direction);
-
-      if (result.reached11) {
-        best = Math.max(best, WIN_SCORE);
-        continue;
-      }
-
-      // The assistant should never recommend a direction that does not change
-      // the board. Failed moves are valid user actions and still consume a turn
-      // in the real game, but they are not candidates for the recommended move
-      // while at least one real move exists.
-      if (!result.changed) continue;
-
-      best = Math.max(best, expectimax(result.newBoard, depth - 1, false));
-    }
-
-    memo.set(hash, best);
-    return best;
-  }
-
-  const emptyCells = getEmptyCells(board);
+  const emptyCells = getEmptyCells(boardAfterMove);
   if (emptyCells.length === 0) {
-    const score = evaluateLeaf(board);
+    const score = evaluateLeaf(boardAfterMove);
     memo.set(hash, score);
     return score;
   }
@@ -118,10 +154,15 @@ function expectimax(board: Board, depth: number, maximizing: boolean): number {
 
   for (const cell of emptyCells) {
     for (const spawn of SPAWN_VALUES) {
-      const nextBoard = board.map((row) => [...row]) as Board;
+      const nextBoard = boardAfterMove.map((row) => [...row]) as Board;
       nextBoard[cell.row][cell.col] = spawn.value;
-      expected +=
-        cellProbability * spawn.probability * expectimax(nextBoard, depth - 1, true);
+
+      // Evaluate only after the spawn completes the current turn. If more
+      // turns remain, search the next player decision from this new board.
+      const value = turnsRemaining <= 1
+        ? evaluateLeaf(nextBoard)
+        : chooseMoveValue(nextBoard, turnsRemaining - 1);
+      expected += cellProbability * spawn.probability * value;
     }
   }
 
@@ -129,15 +170,47 @@ function expectimax(board: Board, depth: number, maximizing: boolean): number {
   return expected;
 }
 
+/** Chooses the best move with a depth measured in complete turns. */
+function chooseMoveValue(board: Board, turnsRemaining: number): number {
+  if (turnsRemaining <= 0 || isGameOver(board)) {
+    return evaluateLeaf(board);
+  }
+
+  const hash = `${getBoardHash(board)}|T${turnsRemaining}`;
+  const cached = memo.get(hash);
+  if (cached !== undefined) return cached;
+
+  let best = GAME_OVER_SCORE;
+  let foundMove = false;
+
+  for (const direction of DIRECTIONS) {
+    const result = applyMove(board, direction);
+
+    if (result.reached11) {
+      best = Math.max(best, WIN_SCORE);
+      foundMove = true;
+      continue;
+    }
+    if (!result.changed) continue;
+
+    foundMove = true;
+    best = Math.max(best, evaluateSpawn(result.newBoard, turnsRemaining));
+  }
+
+  const score = foundMove ? best : GAME_OVER_SCORE;
+  memo.set(hash, score);
+  return score;
+}
+
 export function getBestMove(board: Board): SolverResult {
   memo.clear();
 
   if (isGameOver(board)) {
-    return { bestMove: "UP", isGameOver: true };
+    return { bestMove: null, isGameOver: true };
   }
 
   const depth = searchDepth(getEmptyCells(board).length);
-  let bestMove: Direction = "UP";
+  let bestMove: Direction | null = null;
   let bestScore = -Infinity;
 
   for (const direction of DIRECTIONS) {
@@ -152,11 +225,17 @@ export function getBestMove(board: Board): SolverResult {
     // by the assistant when a direction can actually move or merge tiles.
     if (!result.changed) continue;
 
-    const score = expectimax(result.newBoard, depth - 1, false);
+    const score = evaluateSpawn(result.newBoard, depth);
     if (score > bestScore) {
       bestScore = score;
       bestMove = direction;
     }
+  }
+
+  // No fallback direction: never fabricate UP (or any other move) when every
+  // direction is a no-op. The UI can distinguish this from a real suggestion.
+  if (bestMove === null) {
+    return { bestMove: null, isGameOver: isGameOver(board) };
   }
 
   return { bestMove, isGameOver: false };

@@ -72,6 +72,8 @@ export default function HomePage() {
   useEffect(() => {
     if (!hydrated || !workerRef.current) return;
     if (state.phase === "WAITING_FOR_SPAWN" || state.phase === "GAME_OVER") {
+      // Invalidate any in-flight response for the previous board/phase.
+      requestIdRef.current += 1;
       setSolverResult(null);
       setIsThinking(false);
       return;
@@ -161,7 +163,8 @@ export default function HomePage() {
     !isThinking &&
     state.phase !== "WAITING_FOR_SPAWN" &&
     state.phase !== "GAME_OVER" &&
-    solverResult?.isGameOver === false;
+    solverResult?.isGameOver === false &&
+    solverResult.bestMove !== null;
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-4 py-5 text-white">
@@ -224,7 +227,7 @@ export default function HomePage() {
               />
             </div>
 
-            {solverResult && !solverResult.isGameOver && (
+            {solverResult?.bestMove && !solverResult.isGameOver && (
               <div className="text-sm font-bold text-yellow-400">
                 Move: {solverResult.bestMove}
               </div>

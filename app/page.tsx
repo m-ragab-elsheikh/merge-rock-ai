@@ -3,33 +3,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Board } from "@/components/Board";
 import { Board as BoardType, Direction, GameState, SolverResult, SpawnValue } from "@/types";
-import { completeSpawn, initialState, beginTurn, undoLastTurn } from "@/lib/history";
-import { isBoard } from "@/lib/board";
+import { beginTurn, completeSpawn, initialState, isValidGameState, undoLastTurn } from "@/lib/history";
+import { ContactCard } from "@/components/ContactCard";
 import { applyMove } from "@/lib/merge";
 import { isGameOver } from "@/lib/gameover";
 
 const STORAGE_KEY = "merge-solver-ai-state-v3";
-function isValidPhase(value: unknown): value is GameState["phase"] {
-  return ["SETUP", "READY", "WAITING_FOR_SPAWN", "GAME_OVER"].includes(value as string);
-}
 
-function loadStoredState(): GameState | null {
+type WorkerResponse = { id: number; result?: SolverResult; error?: string };
+
+function loadStoredState(): { state: GameState | null; warning: string } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
+    if (!raw) return { state: null, warning: "" };
 
-    const parsed = JSON.parse(raw) as Partial<GameState>;
-    if (!isBoard(parsed.board) || !Array.isArray(parsed.history) || !isValidPhase(parsed.phase)) {
-      return null;
-    }
+    const parsed: unknown = JSON.parse(raw);
+    if (isValidGameState(parsed)) return { state: parsed, warning: "" };
 
-    return {
-      board: parsed.board,
-      history: parsed.history as GameState["history"],
-      phase: parsed.phase,
-    };
+    // Remove stale or corrupted state so it cannot break the app again on refresh.
+    localStorage.removeItem(STORAGE_KEY);
+    return { state: null, warning: "Invalid saved progress was reset." };
   } catch {
-    return null;
+    return { state: null, warning: "Saved progress could not be read. You can still play normally." };
   }
 }
 
@@ -39,38 +34,91 @@ export default function HomePage() {
   const [isThinking, setIsThinking] = useState(false);
   const [error, setError] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [workerFailed, setWorkerFailed] = useState(false);
+  const [solverRetryToken, setSolverRetryToken] = useState(0);
+  const [storageWarning, setStorageWarning] = useState("");
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
+  const restartWorkerRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const stored = loadStoredState();
-    if (stored) setState(stored);
+    if (stored.state) setState(stored.state);
+    if (stored.warning) setStorageWarning(stored.warning);
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      setStorageWarning("");
+    } catch {
+      setStorageWarning("This browser session cannot save progress. Your game may be lost after refresh.");
+    }
   }, [hydrated, state]);
 
   useEffect(() => {
-    const worker = new Worker(new URL("@/lib/solver.worker.ts", import.meta.url));
-    workerRef.current = worker;
+    const startWorker = () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      setWorkerFailed(false);
 
-    worker.onmessage = (event: MessageEvent<{ id: number; result: SolverResult }>) => {
-      if (event.data.id !== requestIdRef.current) return;
-      setSolverResult(event.data.result);
-      setIsThinking(false);
+      try {
+        const worker = new Worker(new URL("@/lib/solver.worker.ts", import.meta.url));
+        workerRef.current = worker;
+
+        const failWorker = (message: string) => {
+          if (workerRef.current !== worker) return;
+          worker.terminate();
+          workerRef.current = null;
+          requestIdRef.current += 1;
+          setSolverResult(null);
+          setIsThinking(false);
+          setWorkerFailed(true);
+          setError(message);
+        };
+
+        worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+          if (event.data.id !== requestIdRef.current) return;
+          if (event.data.error || !event.data.result) {
+            failWorker("The move calculator encountered a problem. Select Retry to try again.");
+            return;
+          }
+          setSolverResult(event.data.result);
+          setIsThinking(false);
+          setWorkerFailed(false);
+          setError("");
+        };
+
+        worker.onerror = (event) => {
+          event.preventDefault();
+          failWorker("The move calculator stopped unexpectedly. Select Retry to try again.");
+        };
+        worker.onmessageerror = () => {
+          failWorker("The move calculator returned an unreadable response. Select Retry to try again.");
+        };
+      } catch {
+        workerRef.current = null;
+        setIsThinking(false);
+        setWorkerFailed(true);
+        setError("The move calculator could not start. Select Retry to try again.");
+      }
     };
 
+    restartWorkerRef.current = startWorker;
+    startWorker();
+
     return () => {
-      worker.terminate();
+      restartWorkerRef.current = null;
+      requestIdRef.current += 1;
+      workerRef.current?.terminate();
       workerRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    if (!hydrated || !workerRef.current) return;
+    if (!hydrated) return;
     if (state.phase === "WAITING_FOR_SPAWN" || state.phase === "GAME_OVER") {
       // Invalidate any in-flight response for the previous board/phase.
       requestIdRef.current += 1;
@@ -78,11 +126,22 @@ export default function HomePage() {
       setIsThinking(false);
       return;
     }
+    if (!workerRef.current) return;
 
     const id = ++requestIdRef.current;
     setIsThinking(true);
-    workerRef.current.postMessage({ id, board: state.board });
-  }, [hydrated, state.board, state.phase]);
+    setError("");
+    try {
+      workerRef.current.postMessage({ id, board: state.board });
+    } catch {
+      workerRef.current.terminate();
+      workerRef.current = null;
+      setSolverResult(null);
+      setIsThinking(false);
+      setWorkerFailed(true);
+      setError("The move request could not be sent. Select Retry to try again.");
+    }
+  }, [hydrated, state.board, state.phase, solverRetryToken]);
 
   const handleMove = useCallback(
     (direction: Direction) => {
@@ -136,7 +195,7 @@ export default function HomePage() {
   const handleUndo = useCallback(() => {
     const previous = undoLastTurn(state);
     if (!previous) {
-      setError("لا يوجد Turn للتراجع عنه.");
+      setError("There is no move to undo.");
       return;
     }
 
@@ -151,6 +210,12 @@ export default function HomePage() {
     setError("");
   }, []);
 
+  const handleRetrySolver = useCallback(() => {
+    setError("");
+    restartWorkerRef.current?.();
+    setSolverRetryToken((current) => current + 1);
+  }, []);
+
   const inputMode =
     state.phase === "SETUP"
       ? "SETUP"
@@ -161,6 +226,7 @@ export default function HomePage() {
   const canPressMove =
     hydrated &&
     !isThinking &&
+    !workerFailed &&
     state.phase !== "WAITING_FOR_SPAWN" &&
     state.phase !== "GAME_OVER" &&
     solverResult?.isGameOver === false &&
@@ -175,9 +241,12 @@ export default function HomePage() {
             alt="Merge Rock AI"
             className="mb-2 h-16 w-16 rounded-2xl object-contain shadow-[0_0_18px_rgba(250,204,21,0.18)] sm:h-20 sm:w-20"
             draggable={false}
+            onError={(event) => { event.currentTarget.style.display = "none"; }}
           />
           <h1 className="text-3xl font-extrabold tracking-wide text-yellow-400 sm:text-4xl">Merge Rock AI</h1>
-          {isThinking && <div className="mt-2 text-xs font-semibold text-slate-400">Calculating...</div>}
+          <p aria-live="polite" className="mt-2 min-h-4 text-xs font-semibold text-slate-400">
+            {isThinking ? "Calculating best move…" : workerFailed ? "Move calculator unavailable" : ""}
+          </p>
         </header>
 
         <Board
@@ -189,7 +258,7 @@ export default function HomePage() {
 
         {state.phase === "WAITING_FOR_SPAWN" ? (
           <div className="mt-4 w-full max-w-[350px] rounded-2xl border border-yellow-500/20 bg-slate-800/80 px-4 py-3 text-center text-sm font-semibold text-yellow-400">
-            أدخل الرقم الجديد من اللعبة
+            Enter the new tile from the game.
           </div>
         ) : (
           <div className="mt-4 flex flex-col items-center gap-3">
@@ -235,21 +304,39 @@ export default function HomePage() {
           </div>
         )}
 
-        {error && <p className="mt-3 text-sm font-semibold text-red-400">{error}</p>}
+        {error && (
+          <p role="alert" className="mt-3 max-w-[350px] text-center text-sm font-semibold text-red-300">
+            {error}
+          </p>
+        )}
+        {workerFailed && (
+          <button
+            type="button"
+            onClick={handleRetrySolver}
+            className="mt-3 rounded-xl border border-yellow-400/40 bg-yellow-400/10 px-4 py-2 text-sm font-bold text-yellow-200 transition hover:bg-yellow-400/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-300"
+          >
+            ↻ Retry move calculator
+          </button>
+        )}
+        {storageWarning && (
+          <p role="status" className="mt-3 max-w-[350px] text-center text-xs text-amber-200/90">
+            {storageWarning}
+          </p>
+        )}
 
         <div className="mt-5 flex gap-3">
           <button
             type="button"
             onClick={handleUndo}
             disabled={state.history.length === 0}
-            className="rounded-xl border border-slate-700 bg-slate-700 px-5 py-2.5 font-bold text-white transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-xl border border-slate-700 bg-slate-700 px-5 py-2.5 font-bold text-white transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-300"
           >
             ↶ Undo
           </button>
           <button
             type="button"
             onClick={handleReset}
-            className="rounded-xl border border-red-900/70 bg-red-900/70 px-5 py-2.5 font-bold text-white transition hover:bg-red-800"
+            className="rounded-xl border border-red-900/70 bg-red-900/70 px-5 py-2.5 font-bold text-white transition hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
           >
             New Game
           </button>
@@ -260,7 +347,9 @@ export default function HomePage() {
           <Modal title="Game Over" onUndo={handleUndo} onReset={handleReset} canUndo={state.history.length > 0} />
         )}
 
-        <footer className="mt-auto pt-8 text-center text-xs text-slate-500">Merge Rock AI</footer>
+        <ContactCard />
+
+        <footer className="pt-5 text-center text-xs text-slate-500">Merge Rock AI · Built to help you find the next move</footer>
       </div>
     </main>
   );

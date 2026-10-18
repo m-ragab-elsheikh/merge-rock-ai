@@ -17,6 +17,7 @@ const spawnValues: SpawnValue[] = [1, 2, 3, 4, 5];
 
 export function Board({ board, bestMove, inputMode, onCellEdit }: BoardProps) {
   const [selected, setSelected] = useState<{ row: number; col: number } | null>(null);
+  const [failedTileImages, setFailedTileImages] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     setSelected(null);
@@ -60,8 +61,9 @@ export function Board({ board, bestMove, inputMode, onCellEdit }: BoardProps) {
                 <button
                   type="button"
                   key={`${rowIndex}-${colIndex}`}
-                  aria-label={`Cell ${rowIndex + 1}, ${colIndex + 1}`}
+                  aria-label={`Row ${rowIndex + 1}, column ${colIndex + 1}, ${cell === 0 ? "empty" : `level ${cell}`}`}
                   disabled={!canSelect}
+                  aria-pressed={isSelected}
                   onClick={() => handleCellClick(rowIndex, colIndex)}
                   className={`relative aspect-square rounded-xl font-bold text-xl transition-all duration-200 ${TILE_COLORS[cell]} ${
                     cell === 0
@@ -79,16 +81,26 @@ export function Board({ board, bestMove, inputMode, onCellEdit }: BoardProps) {
                     canSelect
                       ? "cursor-pointer hover:brightness-110 active:scale-95"
                       : "cursor-default"
-                  }`}
+                  } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-300 focus-visible:ring-offset-1 focus-visible:ring-offset-slate-900`}
                 >
                   {cell !== 0 && (
                     <div className="relative flex h-full w-full items-center justify-center">
-                      <img
-                        src={`./img/animals/${cell}.png`}
-                        alt={`Level ${cell}`}
-                        className="h-12 w-12 object-contain drop-shadow-xl sm:h-14 sm:w-14"
-                        draggable={false}
-                      />
+                      {failedTileImages[cell] ? (
+                        <span
+                          aria-hidden="true"
+                          className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/15 bg-slate-950/20 text-2xl font-black text-white sm:h-14 sm:w-14"
+                        >
+                          {cell}
+                        </span>
+                      ) : (
+                        <img
+                          src={`./img/animals/${cell}.png`}
+                          alt={`Level ${cell}`}
+                          className="h-12 w-12 object-contain drop-shadow-xl sm:h-14 sm:w-14"
+                          draggable={false}
+                          onError={() => setFailedTileImages((current) => ({ ...current, [cell]: true }))}
+                        />
+                      )}
                       <div className="absolute -bottom-1.5 left-1/2 flex h-[22px] min-w-[22px] -translate-x-1/2 items-center justify-center rounded-full border-2 border-slate-700 bg-slate-900 px-1 text-[10px] font-black text-slate-200 shadow-[0_2px_4px_rgba(0,0,0,0.6)]">
                         {cell}
                       </div>
@@ -104,7 +116,7 @@ export function Board({ board, bestMove, inputMode, onCellEdit }: BoardProps) {
       {editable && selected && (
         <div className="w-full max-w-[350px] rounded-2xl border border-slate-700 bg-slate-800 p-3 shadow-xl">
           <div className="mb-2 text-center text-sm font-bold text-slate-300">
-            {inputMode === "SPAWN" ? "اختر الرقم الجديد" : "اختر الرقم"}
+            {inputMode === "SPAWN" ? "Choose the new tile value" : "Choose a tile value"}
           </div>
           <div className={`grid gap-2 ${inputMode === "SPAWN" ? "grid-cols-5" : "grid-cols-5"}`}>
             {values.map((value) => (
@@ -131,7 +143,7 @@ export function Board({ board, bestMove, inputMode, onCellEdit }: BoardProps) {
       )}
 
       {inputMode === "SPAWN" && !selected && (
-        <p className="text-center text-sm font-semibold text-yellow-400">اختار الخانة الفارغة ثم أدخل الرقم</p>
+        <p className="text-center text-sm font-semibold text-yellow-400">Select an empty cell, then enter the spawned tile.</p>
       )}
     </section>
   );

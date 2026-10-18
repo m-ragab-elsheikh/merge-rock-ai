@@ -19,3 +19,7 @@ yarn-debug.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Deployment and test outputs
+.vercel/
+coverage/

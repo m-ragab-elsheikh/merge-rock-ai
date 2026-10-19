@@ -37,17 +37,3 @@ export interface SolverResult {
 }
 
 export const DIRECTIONS: Direction[] = ["UP", "DOWN", "LEFT", "RIGHT"];
-
-export const TILE_COLORS: Record<TileValue, string> = {
-  0: "bg-tile-0",
-  1: "bg-tile-1 text-white",
-  2: "bg-tile-2 text-white",
-  3: "bg-tile-3 text-white",
-  4: "bg-tile-4 text-white",
-  5: "bg-tile-5 text-white",
-  6: "bg-tile-6 text-white",
-  7: "bg-tile-7 text-black",
-  8: "bg-tile-8 text-black",
-  9: "bg-tile-9 text-black",
-  10: "bg-tile-10 text-black",
-};

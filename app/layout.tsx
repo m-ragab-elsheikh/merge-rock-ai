@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Merge Rock AI",
-  description: "A smart move assistant for the Merge Rock puzzle.",
+  description: "Merge Rock AI helps plan moves in the Merge Rock tile puzzle.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

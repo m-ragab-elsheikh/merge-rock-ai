@@ -4,6 +4,21 @@ import { isGameOver } from "./gameover";
 
 const SPAWN_VALUES: SpawnValue[] = [1, 2, 3, 4, 5];
 
+// Experimental empirical phase model fit to two real histories, with +1 smoothing.
+// Counts preserve the post-first-10 phase after the 10+10 event.
+const PRE10_SPAWN_COUNTS = [557, 163, 38, 11, 0] as const;
+const POST10_SPAWN_COUNTS = [57, 294, 45, 23, 20] as const;
+function probabilitiesFromCounts(counts: readonly number[]): number[] {
+  const total = counts.reduce((sum, count) => sum + count, 0) + counts.length;
+  return counts.map((count) => (count + 1) / total);
+}
+const PRE10_SPAWN_PROBS = probabilitiesFromCounts(PRE10_SPAWN_COUNTS);
+const POST10_SPAWN_PROBS = probabilitiesFromCounts(POST10_SPAWN_COUNTS);
+
+function containsTen(g: readonly number[]): boolean {
+  return g.some((value) => value === 10);
+}
+
 const WIN_SCORE = 1_000_000_000;
 const GAME_OVER_SCORE = -50_000_000;
 
@@ -65,47 +80,15 @@ const SNAKE_WEIGHT_TABLES: number[][] = SNAKE_PATHS.map((path) => {
 let memo = new Map<string, number>();
 let nodesVisited = 0;
 let evaluationsVisited = 0;
-let budgetExhaustions = 0;
-let completedDepth = 0;
-let rootCandidateCount = 0;
 let activeCandidateNodes = 0;
 let activeCandidateEvaluations = 0;
 let globalNodeLimit = 5_000;
 let globalEvalLimit = 25_000;
-let lastBudgetLimit: "nodes" | "evaluations" | null = null;
-let lastExhaustedCandidate: Direction | null = null;
 const MAX_NODES_PER_CANDIDATE = 5_000;
 const MAX_EVALS_PER_CANDIDATE = 25_000;
 const DEFAULT_SEARCH_NODES = 5_000;
 const DEFAULT_SEARCH_EVALS = 25_000;
 const SEARCH_BUDGET_EXHAUSTED = Symbol("SEARCH_BUDGET_EXHAUSTED");
-
-type RootCandidateDiagnostic = {
-  direction: Direction;
-  initialScore: number;
-  completedScore: number | null;
-  completedDepth: number;
-  nodesUsed: number;
-  evaluationsUsed: number;
-};
-let rootCandidateDiagnostics: RootCandidateDiagnostic[] = [];
-
-export function getSolverSearchStats() {
-  return {
-    completedDepth,
-    budgetExhaustions,
-    nodesVisited,
-    evaluationsVisited,
-    rootCandidateCount,
-    nodesPerCandidateLimit: MAX_NODES_PER_CANDIDATE,
-    evaluationsPerCandidateLimit: MAX_EVALS_PER_CANDIDATE,
-    maxSearchNodes: globalNodeLimit,
-    maxSearchEvals: globalEvalLimit,
-    lastBudgetLimit,
-    lastExhaustedCandidate,
-    rootCandidates: rootCandidateDiagnostics.map((candidate) => ({ ...candidate })),
-  };
-}
 
 function hashGrid(g: number[]): string {
   let s = "";
@@ -115,7 +98,7 @@ function hashGrid(g: number[]): string {
   return s;
 }
 
-export function boardToFlat(board: Board): number[] {
+function boardToFlat(board: Board): number[] {
   const g = new Array<number>(16);
   for (let r = 0; r < 4; r++) {
     for (let c = 0; c < 4; c++) {
@@ -177,7 +160,7 @@ function slideLine(
   return { changed, reached11 };
 }
 
-export function simulateFlatMove(
+function simulateFlatMove(
   g: number[],
   dir: Direction
 ): { next: number[]; changed: boolean; reached11: boolean } {
@@ -207,7 +190,6 @@ export function simulateFlatMove(
 
 function evaluateFlatBoard(g: number[]): number {
   if (evaluationsVisited >= globalEvalLimit || activeCandidateEvaluations >= MAX_EVALS_PER_CANDIDATE) {
-    lastBudgetLimit = "evaluations";
     throw SEARCH_BUDGET_EXHAUSTED;
   }
   evaluationsVisited += 1;
@@ -421,13 +403,14 @@ function evaluateFlatBoard(g: number[]): number {
   );
 }
 
-function searchChanceNode(g: number[], depthRemaining: number): number {
+function searchChanceNode(g: number[], depthRemaining: number, lateSpawnPhase: boolean): number {
   if (nodesVisited >= globalNodeLimit || activeCandidateNodes >= MAX_NODES_PER_CANDIDATE) {
-    lastBudgetLimit = "nodes";
     throw SEARCH_BUDGET_EXHAUSTED;
   }
   nodesVisited += 1;
   activeCandidateNodes += 1;
+  // Once any 10 has appeared, keep the late phase even if 10+10 later removes both tiles.
+  lateSpawnPhase = lateSpawnPhase || containsTen(g);
 
   // At leaf level (depthRemaining <= 1), evaluate the post-move state directly
   // or with lightweight sampling so we don't blow 40x evals on a single leaf.
@@ -445,7 +428,7 @@ function searchChanceNode(g: number[], depthRemaining: number): number {
     return evaluateFlatBoard(g);
   }
 
-  const hash = `${hashGrid(g)}|C${depthRemaining}`;
+  const hash = `${hashGrid(g)}|C${depthRemaining}|P${lateSpawnPhase ? 1 : 0}`;
   const cached = memo.get(hash);
   if (cached !== undefined) return cached;
 
@@ -460,19 +443,23 @@ function searchChanceNode(g: number[], depthRemaining: number): number {
     }
   }
 
-  // Representative spawns: when board is open and depth is high, test [1, 3, 5] (low, mid, high);
-  // when board is tight (numEmpty <= 4), test all [1, 2, 3, 4, 5] for exact tactical survival.
-  const spawnList: readonly number[] =
-    numEmpty <= 4 ? SPAWN_VALUES : [1, 3, 5];
-
-  const weight = 1 / (cellsToTest.length * spawnList.length);
+  // Preserve the existing number of representative spawn branches on open boards.
+  // Tight boards use all five values with empirical weighted probabilities.
+  const probs = lateSpawnPhase ? POST10_SPAWN_PROBS : PRE10_SPAWN_PROBS;
+  const spawnList: readonly number[] = numEmpty <= 4
+    ? SPAWN_VALUES
+    : lateSpawnPhase ? [1, 2, 4] : [1, 2, 3];
+  const spawnWeights: readonly number[] = numEmpty <= 4
+    ? probs
+    : [probs[0], probs[1], probs[2] + probs[3] + probs[4]];
+  const cellWeight = 1 / cellsToTest.length;
   let expected = 0;
 
   for (let e = 0; e < cellsToTest.length; e++) {
     const cellIdx = cellsToTest[e];
     for (let s = 0; s < spawnList.length; s++) {
       g[cellIdx] = spawnList[s];
-      expected += weight * searchMaxNode(g, depthRemaining - 1);
+      expected += cellWeight * spawnWeights[s] * searchMaxNode(g, depthRemaining - 1, lateSpawnPhase);
     }
     g[cellIdx] = 0;
   }
@@ -481,19 +468,19 @@ function searchChanceNode(g: number[], depthRemaining: number): number {
   return expected;
 }
 
-function searchMaxNode(g: number[], depthRemaining: number): number {
+function searchMaxNode(g: number[], depthRemaining: number, lateSpawnPhase: boolean): number {
   if (nodesVisited >= globalNodeLimit || activeCandidateNodes >= MAX_NODES_PER_CANDIDATE) {
-    lastBudgetLimit = "nodes";
     throw SEARCH_BUDGET_EXHAUSTED;
   }
   nodesVisited += 1;
   activeCandidateNodes += 1;
+  lateSpawnPhase = lateSpawnPhase || containsTen(g);
 
   if (depthRemaining <= 0) {
     return evaluateFlatBoard(g);
   }
 
-  const hash = `${hashGrid(g)}|M${depthRemaining}`;
+  const hash = `${hashGrid(g)}|M${depthRemaining}|P${lateSpawnPhase ? 1 : 0}`;
   const cached = memo.get(hash);
   if (cached !== undefined) return cached;
 
@@ -510,7 +497,7 @@ function searchMaxNode(g: number[], depthRemaining: number): number {
     if (!sim.changed) continue;
 
     hasLegalMove = true;
-    const val = searchChanceNode(sim.next, depthRemaining);
+    const val = searchChanceNode(sim.next, depthRemaining, lateSpawnPhase || sim.reached11 || containsTen(sim.next));
     if (val > best) best = val;
   }
 
@@ -524,19 +511,13 @@ function getAdaptiveDepth(emptyCount: number): number {
   return emptyCount <= 3 ? 4 : 3;
 }
 
-export function getBestMove(board: Board): SolverResult {
-  budgetExhaustions = 0;
-  completedDepth = 0;
+export function getBestMove(board: Board, hasReached10Before = false): SolverResult {
   nodesVisited = 0;
   evaluationsVisited = 0;
-  rootCandidateCount = 0;
   activeCandidateNodes = 0;
   activeCandidateEvaluations = 0;
   globalNodeLimit = DEFAULT_SEARCH_NODES;
   globalEvalLimit = DEFAULT_SEARCH_EVALS;
-  lastBudgetLimit = null;
-  lastExhaustedCandidate = null;
-  rootCandidateDiagnostics = [];
 
   if (isGameOver(board)) {
     return { bestMove: null, isGameOver: true };
@@ -558,18 +539,6 @@ export function getBestMove(board: Board): SolverResult {
     const result = applyMove(board, direction);
     // Priority 1: Any move that immediately reaches Merge 11 wins on the spot
     if (result.reached11) {
-      completedDepth = 1;
-      rootCandidateCount = 1;
-      globalNodeLimit = MAX_NODES_PER_CANDIDATE;
-      globalEvalLimit = MAX_EVALS_PER_CANDIDATE;
-      rootCandidateDiagnostics = [{
-        direction,
-        initialScore: WIN_SCORE,
-        completedScore: WIN_SCORE,
-        completedDepth: 1,
-        nodesUsed: 0,
-        evaluationsUsed: 0,
-      }];
       return { bestMove: direction, isGameOver: false };
     }
     if (result.changed) {
@@ -582,15 +551,6 @@ export function getBestMove(board: Board): SolverResult {
     }
   }
 
-  rootCandidateCount = candidates.length;
-  rootCandidateDiagnostics = candidates.map((candidate) => ({
-    direction: candidate.direction,
-    initialScore: candidate.initialScore,
-    completedScore: null,
-    completedDepth: 1,
-    nodesUsed: 0,
-    evaluationsUsed: 0,
-  }));
   if (candidates.length === 0) {
     return { bestMove: null, isGameOver: isGameOver(board) };
   }
@@ -600,7 +560,6 @@ export function getBestMove(board: Board): SolverResult {
   candidates.sort((a, b) => b.initialScore - a.initialScore);
 
   if (candidates.length === 1) {
-    completedDepth = 1;
     return { bestMove: candidates[0].direction, isGameOver: false };
   }
 
@@ -608,7 +567,6 @@ export function getBestMove(board: Board): SolverResult {
   globalNodeLimit = MAX_NODES_PER_CANDIDATE * candidates.length * (maxDepth - 1);
   globalEvalLimit = MAX_EVALS_PER_CANDIDATE * candidates.length * (maxDepth - 1);
   let bestMove: Direction = candidates[0].direction;
-  completedDepth = 1; // Depth 1 (immediate evaluation of all candidates) is already completed!
 
   memo.clear();
   // Iterative deepening starting from depth 2 (which includes spawn + player response).
@@ -619,46 +577,26 @@ export function getBestMove(board: Board): SolverResult {
     let depthBestMove: Direction = candidates[0].direction;
     let depthBestScore = -Infinity;
     let depthCompleted = true;
-    const depthScores = new Map<Direction, number>();
 
     for (const candidate of candidates) {
       activeCandidateNodes = 0;
       activeCandidateEvaluations = 0;
       try {
-        const score = searchChanceNode(candidate.nextFlat.slice(), depth);
-        depthScores.set(candidate.direction, score);
+        const score = searchChanceNode(candidate.nextFlat.slice(), depth, hasReached10Before || containsTen(candidate.nextFlat));
         if (score > depthBestScore) {
           depthBestScore = score;
           depthBestMove = candidate.direction;
         }
       } catch (error) {
         if (error !== SEARCH_BUDGET_EXHAUSTED) throw error;
-        budgetExhaustions += 1;
-        lastExhaustedCandidate = candidate.direction;
         depthCompleted = false;
         break;
-      } finally {
-        const diagnostic = rootCandidateDiagnostics.find((item) => item.direction === candidate.direction);
-        if (diagnostic) {
-          diagnostic.nodesUsed = activeCandidateNodes;
-          diagnostic.evaluationsUsed = activeCandidateEvaluations;
-        }
       }
     }
 
     if (!depthCompleted) break;
 
-    completedDepth = depth;
     bestMove = depthBestMove;
-
-    // Save scores only after every root candidate completed the same depth.
-    for (const candidate of candidates) {
-      const diagnostic = rootCandidateDiagnostics.find((item) => item.direction === candidate.direction);
-      if (diagnostic) {
-        diagnostic.completedScore = depthScores.get(candidate.direction) ?? null;
-        diagnostic.completedDepth = depth;
-      }
-    }
 
     // Re-order candidates based on the latest completed depth to keep best move first
     candidates.sort((a, b) =>

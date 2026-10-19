@@ -23,3 +23,12 @@ next-env.d.ts
 # Deployment and test outputs
 .vercel/
 coverage/
+# Generated experiments, logs, and temporary benchmark files
+benchmark*.cjs
+benchmark*.json
+benchmark*.csv
+verify-parity*.cjs
+verify-parity*.json
+test-results/
+diagnostics/
+playwright-report/

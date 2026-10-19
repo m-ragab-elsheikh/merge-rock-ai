@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Board } from "@/components/Board";
 import { Board as BoardType, Direction, GameState, SolverResult, SpawnValue } from "@/types";
 import { beginTurn, completeSpawn, initialState, isValidGameState, undoLastTurn } from "@/lib/history";
-import { ContactCard } from "@/components/ContactCard";
+import { SocialLinks } from "@/components/SocialLinks";
 import { applyMove } from "@/lib/merge";
 import { isGameOver } from "@/lib/gameover";
 
@@ -20,9 +20,8 @@ function loadStoredState(): { state: GameState | null; warning: string } {
     const parsed: unknown = JSON.parse(raw);
     if (isValidGameState(parsed)) return { state: parsed, warning: "" };
 
-    // Remove stale or corrupted state so it cannot break the app again on refresh.
     localStorage.removeItem(STORAGE_KEY);
-    return { state: null, warning: "Invalid saved progress was reset." };
+    return { state: null, warning: "Saved progress was invalid and has been reset." };
   } catch {
     return { state: null, warning: "Saved progress could not be read. You can still play normally." };
   }
@@ -37,9 +36,20 @@ export default function HomePage() {
   const [workerFailed, setWorkerFailed] = useState(false);
   const [solverRetryToken, setSolverRetryToken] = useState(0);
   const [storageWarning, setStorageWarning] = useState("");
+
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
   const restartWorkerRef = useRef<(() => void) | null>(null);
+
+  const hasReached10Before =
+    state.board.some((row) => row.includes(10)) ||
+    state.history.some(
+      (entry) =>
+        entry.reached11 ||
+        entry.boardBefore.some((row) => row.includes(10)) ||
+        entry.boardAfter.some((row) => row.includes(10))
+    );
+  const maxTile = Math.max(1, ...state.board.flat());
 
   useEffect(() => {
     const stored = loadStoredState();
@@ -120,7 +130,6 @@ export default function HomePage() {
   useEffect(() => {
     if (!hydrated) return;
     if (state.phase === "WAITING_FOR_SPAWN" || state.phase === "GAME_OVER") {
-      // Invalidate any in-flight response for the previous board/phase.
       requestIdRef.current += 1;
       setSolverResult(null);
       setIsThinking(false);
@@ -132,7 +141,7 @@ export default function HomePage() {
     setIsThinking(true);
     setError("");
     try {
-      workerRef.current.postMessage({ id, board: state.board });
+      workerRef.current.postMessage({ id, board: state.board, hasReached10Before });
     } catch {
       workerRef.current.terminate();
       workerRef.current = null;
@@ -141,13 +150,11 @@ export default function HomePage() {
       setWorkerFailed(true);
       setError("The move request could not be sent. Select Retry to try again.");
     }
-  }, [hydrated, state.board, state.phase, solverRetryToken]);
+  }, [hydrated, state.board, state.history, state.phase, solverRetryToken, hasReached10Before]);
 
   const handleMove = useCallback(
     (direction: Direction) => {
-      if (isThinking || state.phase === "WAITING_FOR_SPAWN" || state.phase === "GAME_OVER") {
-        return;
-      }
+      if (isThinking || state.phase === "WAITING_FOR_SPAWN" || state.phase === "GAME_OVER") return;
 
       const result = applyMove(state.board, direction);
       const nextState = beginTurn(state, direction, result.newBoard, result.reached11);
@@ -192,6 +199,8 @@ export default function HomePage() {
     [state]
   );
 
+
+
   const handleUndo = useCallback(() => {
     const previous = undoLastTurn(state);
     if (!previous) {
@@ -232,124 +241,153 @@ export default function HomePage() {
     solverResult?.isGameOver === false &&
     solverResult.bestMove !== null;
 
+  const solverStatus = isThinking
+    ? "Calculating the best move…"
+    : workerFailed
+      ? "Move calculator unavailable"
+      : state.phase === "GAME_OVER"
+        ? "No more legal moves"
+        : hasReached10Before
+          ? "Stage 02 · Higher tile phase"
+          : "Stage 01 · Build your board";
+
   return (
-    <main className="min-h-screen overflow-x-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-4 py-5 text-white">
-      <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] w-full max-w-xl flex-col items-center">
-        <header className="mb-4 flex flex-col items-center">
-          <img
-            src="./img/logo.jpg"
-            alt="Merge Rock AI"
-            className="mb-2 h-16 w-16 rounded-2xl object-contain shadow-[0_0_18px_rgba(250,204,21,0.18)] sm:h-20 sm:w-20"
-            draggable={false}
-            onError={(event) => { event.currentTarget.style.display = "none"; }}
-          />
-          <h1 className="text-3xl font-extrabold tracking-wide text-yellow-400 sm:text-4xl">Merge Rock AI</h1>
-          <p aria-live="polite" className="mt-2 min-h-4 text-xs font-semibold text-slate-400">
-            {isThinking ? "Calculating best move…" : workerFailed ? "Move calculator unavailable" : ""}
-          </p>
-        </header>
+    <main className="forest-app">
+      <div className="forest-backdrop" aria-hidden="true">
+        <img src="./img/forest-wallpaper.webp" alt="" draggable={false} />
+        <span className="forest-overlay" />
+      </div>
 
-        <Board
-          board={state.board}
-          bestMove={solverResult?.bestMove}
-          inputMode={inputMode}
-          onCellEdit={handleBoardInput}
-        />
-
-        {state.phase === "WAITING_FOR_SPAWN" ? (
-          <div className="mt-4 w-full max-w-[350px] rounded-2xl border border-yellow-500/20 bg-slate-800/80 px-4 py-3 text-center text-sm font-semibold text-yellow-400">
-            Enter the new tile from the game.
-          </div>
-        ) : (
-          <div className="mt-4 flex flex-col items-center gap-3">
-            <div className="grid grid-cols-3 gap-2">
-              <div />
-              <DirectionButton
-                direction="UP"
-                label="⬆"
-                active={solverResult?.bestMove === "UP"}
-                disabled={!canPressMove}
-                onClick={handleMove}
-              />
-              <div />
-
-              <DirectionButton
-                direction="LEFT"
-                label="⬅"
-                active={solverResult?.bestMove === "LEFT"}
-                disabled={!canPressMove}
-                onClick={handleMove}
-              />
-              <DirectionButton
-                direction="DOWN"
-                label="⬇"
-                active={solverResult?.bestMove === "DOWN"}
-                disabled={!canPressMove}
-                onClick={handleMove}
-              />
-              <DirectionButton
-                direction="RIGHT"
-                label="➡"
-                active={solverResult?.bestMove === "RIGHT"}
-                disabled={!canPressMove}
-                onClick={handleMove}
-              />
+      <div className="app-shell">
+        <header className="app-header">
+          <div className="top-bar">
+            <div className="level-pill" aria-label={`Current highest tile is ${maxTile}`}>
+              <BarsIcon />
+              <span>LEVEL <strong>{maxTile}</strong></span>
             </div>
 
-            {solverResult?.bestMove && !solverResult.isGameOver && (
-              <div className="text-sm font-bold text-yellow-400">
-                Move: {solverResult.bestMove}
+          </div>
+
+          <div className="brand-lockup">
+            <div className="brand-emblem">
+              <img src="./img/logo.jpg" alt="Merge Rock AI logo" draggable={false} />
+            </div>
+            <h1 className="brand-title">MERGE ROCK <span>AI</span></h1>
+            <p className="brand-status" aria-live="polite">
+              <span className={`status-light ${isThinking ? "status-light--thinking" : workerFailed ? "status-light--error" : ""}`} />
+              {solverStatus}
+            </p>
+          </div>
+          <div className="title-beam" aria-hidden="true"><span /></div>
+        </header>
+
+
+
+        <section className="board-section" aria-label="Merge board">
+          <Board
+            board={state.board}
+            bestMove={solverResult?.bestMove}
+            inputMode={inputMode}
+            onCellEdit={handleBoardInput}
+          />
+        </section>
+
+        {state.phase === "SETUP" && (
+          <section className="setup-panel">
+            <div className="setup-copy">
+              <p className="eyebrow">NEW SESSION</p>
+              <h2>Match your game board</h2>
+              <p>Tap a cell to enter its level. The original game starts with two 1s.</p>
+            </div>
+
+          </section>
+        )}
+
+        <section className="status-strip" aria-label="Game status">
+          <div className="moves-card">
+            <div className="moves-icon"><FootprintsIcon /></div>
+            <div className="moves-copy">
+              <span>MOVES</span>
+              <strong>{state.history.length}</strong>
+            </div>
+          </div>
+          <div className="hint-card">
+            <span className="hint-icon"><BulbIcon /></span>
+            <p>
+              {state.phase === "WAITING_FOR_SPAWN"
+                ? "Enter the tile that appeared in your original game."
+                : hasReached10Before
+                  ? "Higher-value spawns are more likely in this Solver stage."
+                  : "Merge matching creatures to reach higher levels!"}
+            </p>
+          </div>
+        </section>
+
+        {state.phase === "WAITING_FOR_SPAWN" && (
+          <div className="spawn-prompt" role="status">
+            <span className="spawn-prompt__pulse" />
+            <div>
+              <strong>New tile detected in the original game?</strong>
+              <p>Select an empty cell on this board, then enter its value.</p>
+            </div>
+          </div>
+        )}
+
+        {state.phase !== "WAITING_FOR_SPAWN" && (
+          <section className="controls-section" aria-label="Move controls">
+            <div className="controls-heading">
+              <div>
+                <p className="eyebrow">RECOMMENDED MOVE</p>
+                <h2>{solverResult?.bestMove && !solverResult.isGameOver ? solverResult.bestMove : isThinking ? "Thinking…" : "Ready when you are"}</h2>
               </div>
+              {solverResult?.bestMove && !solverResult.isGameOver && (
+                <span className="move-chip"><span className="chip-dot" /> AI PICK</span>
+              )}
+            </div>
+            <div className="direction-pad">
+              <div />
+              <DirectionButton direction="UP" active={solverResult?.bestMove === "UP"} disabled={!canPressMove} onClick={handleMove} />
+              <div />
+              <DirectionButton direction="LEFT" active={solverResult?.bestMove === "LEFT"} disabled={!canPressMove} onClick={handleMove} />
+              <DirectionButton direction="DOWN" active={solverResult?.bestMove === "DOWN"} disabled={!canPressMove} onClick={handleMove} />
+              <DirectionButton direction="RIGHT" active={solverResult?.bestMove === "RIGHT"} disabled={!canPressMove} onClick={handleMove} />
+            </div>
+          </section>
+        )}
+
+        {(error || workerFailed) && (
+          <div className="error-panel" role="alert">
+            <p>{error || "The move calculator could not start."}</p>
+            {workerFailed && (
+              <button type="button" className="retry-button" onClick={handleRetrySolver}>↻ Retry calculator</button>
             )}
           </div>
         )}
+        {storageWarning && <p className="storage-warning" role="status">{storageWarning}</p>}
 
-        {error && (
-          <p role="alert" className="mt-3 max-w-[350px] text-center text-sm font-semibold text-red-300">
-            {error}
-          </p>
-        )}
-        {workerFailed && (
-          <button
-            type="button"
-            onClick={handleRetrySolver}
-            className="mt-3 rounded-xl border border-yellow-400/40 bg-yellow-400/10 px-4 py-2 text-sm font-bold text-yellow-200 transition hover:bg-yellow-400/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-300"
-          >
-            ↻ Retry move calculator
+        <div className="action-row">
+          <button type="button" onClick={handleUndo} disabled={state.history.length === 0} className="action-button action-button--undo">
+            <UndoIcon />
+            <span>UNDO</span>
           </button>
-        )}
-        {storageWarning && (
-          <p role="status" className="mt-3 max-w-[350px] text-center text-xs text-amber-200/90">
-            {storageWarning}
-          </p>
-        )}
-
-        <div className="mt-5 flex gap-3">
-          <button
-            type="button"
-            onClick={handleUndo}
-            disabled={state.history.length === 0}
-            className="rounded-xl border border-slate-700 bg-slate-700 px-5 py-2.5 font-bold text-white transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-300"
-          >
-            ↶ Undo
-          </button>
-          <button
-            type="button"
-            onClick={handleReset}
-            className="rounded-xl border border-red-900/70 bg-red-900/70 px-5 py-2.5 font-bold text-white transition hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
-          >
-            New Game
+          <button type="button" onClick={handleReset} className="action-button action-button--new">
+            <PlayIcon />
+            <span>NEW GAME</span>
           </button>
         </div>
-
 
         {state.phase === "GAME_OVER" && (
           <Modal title="Game Over" onUndo={handleUndo} onReset={handleReset} canUndo={state.history.length > 0} />
         )}
 
-        <ContactCard />
+        <SocialLinks />
 
-        <footer className="pt-5 text-center text-xs text-slate-500">Merge Rock AI · Built to help you find the next move</footer>
+        <footer className="app-footer" aria-label="Copyright">
+          <span className="footer-star">©</span>
+          <span className="copyright-owner">2026 Mahmoud R. Elsheikh</span>
+          <span className="copyright-separator">·</span>
+          <span className="copyright-terms">All rights reserved</span>
+        </footer>
       </div>
     </main>
   );
@@ -357,13 +395,11 @@ export default function HomePage() {
 
 function DirectionButton({
   direction,
-  label,
   active,
   disabled,
   onClick,
 }: {
   direction: Direction;
-  label: string;
   active: boolean;
   disabled: boolean;
   onClick: (direction: Direction) => void;
@@ -373,14 +409,11 @@ function DirectionButton({
       type="button"
       onClick={() => onClick(direction)}
       disabled={disabled}
-      aria-label={direction}
-      className={`h-14 w-14 rounded-2xl border text-2xl font-black transition-all sm:h-16 sm:w-16 ${
-        active
-          ? "scale-105 border-yellow-300 bg-yellow-400 text-slate-950 shadow-[0_0_22px_rgba(250,204,21,0.45)]"
-          : "border-slate-700 bg-slate-800 text-white hover:bg-slate-700"
-      } disabled:cursor-not-allowed disabled:opacity-35`}
+      aria-label={`Move ${direction.toLowerCase()}`}
+      aria-pressed={active}
+      className={`direction-button direction-button--${direction.toLowerCase()} ${active ? "direction-button--active" : ""}`}
     >
-      {label}
+      <ArrowIcon direction={direction} />
     </button>
   );
 }
@@ -397,27 +430,42 @@ function Modal({
   canUndo: boolean;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 text-center shadow-2xl">
-        <h2 className="text-3xl font-extrabold text-yellow-400">{title}</h2>
-        <div className="mt-5 flex gap-3">
-          <button
-            type="button"
-            onClick={onUndo}
-            disabled={!canUndo}
-            className="flex-1 rounded-xl bg-slate-700 py-3 font-bold text-white disabled:opacity-40"
-          >
-            ↶ Undo
-          </button>
-          <button
-            type="button"
-            onClick={onReset}
-            className="flex-1 rounded-xl bg-red-700 py-3 font-bold text-white hover:bg-red-600"
-          >
-            New Game
-          </button>
+    <div className="gameover-backdrop" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
+      <div className="gameover-modal">
+        <div className="gameover-icon"><span>✦</span></div>
+        <p className="eyebrow">SESSION COMPLETE</p>
+        <h2 id="gameover-title">{title}</h2>
+        <p className="gameover-copy">No more legal moves are available on this board.</p>
+        <div className="modal-actions">
+          <button type="button" onClick={onUndo} disabled={!canUndo} className="modal-button modal-button--secondary"><UndoIcon /> Undo</button>
+          <button type="button" onClick={onReset} className="modal-button modal-button--primary"><PlayIcon /> New Game</button>
         </div>
       </div>
     </div>
+  );
+}
+
+function BarsIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19v-5M9 19V9M14 19V4M19 19v-8" /></svg>;
+}
+
+function FootprintsIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8.4 3.5c-2.2 0-3.6 2.8-3.2 6.3.3 2.9 1.6 4.9 3.3 4.9 1.9 0 3.2-2.8 3-6.2-.2-2.8-1.1-5-3.1-5Z"/><path d="M5.4 17.2c-1.9.3-3.1 3.2-2.7 6 .4 2.5 1.8 4.3 3.7 4 1.8-.3 2.5-2.6 2-5.1-.5-2.8-1.4-5-3-4.9Z"/><g transform="translate(32 0) scale(-1 1)"><path d="M8.4 3.5c-2.2 0-3.6 2.8-3.2 6.3.3 2.9 1.6 4.9 3.3 4.9 1.9 0 3.2-2.8 3-6.2-.2-2.8-1.1-5-3.1-5Z"/><path d="M5.4 17.2c-1.9.3-3.1 3.2-2.7 6 .4 2.5 1.8 4.3 3.7 4 1.8-.3 2.5-2.6 2-5.1-.5-2.8-1.4-5-3-4.9Z"/></g></svg>;
+}
+function BulbIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8.2 14.7A6.5 6.5 0 1 1 15.8 14.7c-.8.6-1.3 1.5-1.3 2.3h-5c0-.8-.5-1.7-1.3-2.3Z" /><path d="M12 2v2M3.8 5.2l1.4 1.4M20.2 5.2l-1.4 1.4M2 12h2M20 12h2" /></svg>;
+}
+function UndoIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5" /><path d="M4.5 9H14a6 6 0 0 1 0 12H9" /></svg>;
+}
+function PlayIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.8c0-.8.9-1.3 1.6-.8l11 7.1a1.1 1.1 0 0 1 0 1.8l-11 7.1c-.7.5-1.6 0-1.6-.8V4.8Z" /></svg>;
+}
+function ArrowIcon({ direction }: { direction: Direction }) {
+  const rotations: Record<Direction, number> = { UP: 0, RIGHT: 90, DOWN: 180, LEFT: 270 };
+  return (
+    <svg viewBox="0 0 32 32" aria-hidden="true" style={{ transform: `rotate(${rotations[direction]}deg)` }}>
+      <path d="M16 27V5M7 14l9-9 9 9" />
+    </svg>
   );
 }

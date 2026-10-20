@@ -36,7 +36,6 @@ export default function HomePage() {
   const [workerFailed, setWorkerFailed] = useState(false);
   const [solverRetryToken, setSolverRetryToken] = useState(0);
   const [storageWarning, setStorageWarning] = useState("");
-
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
   const restartWorkerRef = useRef<(() => void) | null>(null);
@@ -199,8 +198,6 @@ export default function HomePage() {
     [state]
   );
 
-
-
   const handleUndo = useCallback(() => {
     const previous = undoLastTurn(state);
     if (!previous) {
@@ -265,7 +262,6 @@ export default function HomePage() {
               <BarsIcon />
               <span>LEVEL <strong>{maxTile}</strong></span>
             </div>
-
           </div>
 
           <div className="brand-lockup">
@@ -281,8 +277,6 @@ export default function HomePage() {
           <div className="title-beam" aria-hidden="true"><span /></div>
         </header>
 
-
-
         <section className="board-section" aria-label="Merge board">
           <Board
             board={state.board}
@@ -297,9 +291,8 @@ export default function HomePage() {
             <div className="setup-copy">
               <p className="eyebrow">NEW SESSION</p>
               <h2>Match your game board</h2>
-              <p>Tap a cell to enter its level. The original game starts with two 1s.</p>
+              <p>Tap a cell to enter its level.</p>
             </div>
-
           </section>
         )}
 
@@ -382,11 +375,9 @@ export default function HomePage() {
 
         <SocialLinks />
 
-        <footer className="app-footer" aria-label="Copyright">
-          <span className="footer-star">©</span>
-          <span className="copyright-owner">2026 Mahmoud R. Elsheikh</span>
-          <span className="copyright-separator">·</span>
-          <span className="copyright-terms">All rights reserved</span>
+        <footer className="app-footer">
+          <span className="footer-star">✦</span>
+          MERGE ROCK AI <span>·</span> STAGE-AWARE SOLVER
         </footer>
       </div>
     </main>
@@ -448,7 +439,6 @@ function Modal({
 function BarsIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19v-5M9 19V9M14 19V4M19 19v-8" /></svg>;
 }
-
 function FootprintsIcon() {
   return <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8.4 3.5c-2.2 0-3.6 2.8-3.2 6.3.3 2.9 1.6 4.9 3.3 4.9 1.9 0 3.2-2.8 3-6.2-.2-2.8-1.1-5-3.1-5Z"/><path d="M5.4 17.2c-1.9.3-3.1 3.2-2.7 6 .4 2.5 1.8 4.3 3.7 4 1.8-.3 2.5-2.6 2-5.1-.5-2.8-1.4-5-3-4.9Z"/><g transform="translate(32 0) scale(-1 1)"><path d="M8.4 3.5c-2.2 0-3.6 2.8-3.2 6.3.3 2.9 1.6 4.9 3.3 4.9 1.9 0 3.2-2.8 3-6.2-.2-2.8-1.1-5-3.1-5Z"/><path d="M5.4 17.2c-1.9.3-3.1 3.2-2.7 6 .4 2.5 1.8 4.3 3.7 4 1.8-.3 2.5-2.6 2-5.1-.5-2.8-1.4-5-3-4.9Z"/></g></svg>;
 }

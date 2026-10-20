@@ -4,8 +4,6 @@ import { isGameOver } from "./gameover";
 
 const SPAWN_VALUES: SpawnValue[] = [1, 2, 3, 4, 5];
 
-// Experimental empirical phase model fit to two real histories, with +1 smoothing.
-// Counts preserve the post-first-10 phase after the 10+10 event.
 const PRE10_SPAWN_COUNTS = [557, 163, 38, 11, 0] as const;
 const POST10_SPAWN_COUNTS = [57, 294, 45, 23, 20] as const;
 function probabilitiesFromCounts(counts: readonly number[]): number[] {
@@ -22,10 +20,8 @@ function containsTen(g: readonly number[]): boolean {
 const WIN_SCORE = 1_000_000_000;
 const GAME_OVER_SCORE = -50_000_000;
 
-// Exponential tile values: 2^v
 const POW2 = [0, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
 
-// Super-linear progression score: merging v + v -> v + 1 strictly increases score
 const PROGRESSION_SCORE = [
   0,
   40,          // 1
@@ -40,7 +36,6 @@ const PROGRESSION_SCORE = [
   420_000,     // 10
 ];
 
-// Snake path indices (0..15) for all 8 symmetries of a 4x4 board.
 const SNAKE_PATHS: number[][] = (() => {
   const basePath = [0, 1, 2, 3, 7, 6, 5, 4, 8, 9, 10, 11, 15, 14, 13, 12];
   const paths: number[][] = [];
@@ -108,7 +103,6 @@ function boardToFlat(board: Board): number[] {
   return g;
 }
 
-// Ultra-fast 1D move simulation matching lib/merge.ts rules exactly
 function slideLine(
   g: number[],
   i0: number,
@@ -242,7 +236,6 @@ function evaluateFlatBoard(g: number[]): number {
       }
     }
 
-    // Check if this tile is a trapped blocker surrounded by higher tiles
     let minSurrounding = 99;
     let blockedSides = 0;
     if (r > 0) {
@@ -366,15 +359,13 @@ function evaluateFlatBoard(g: number[]): number {
 
   const snakeBonus = bestSnakeScore * 3;
 
-  // Survival & mobility scoring: crucial for 1..5 spawn survival
   const emptyBonus =
     emptyCount * 55_000 +
     emptyCount * emptyCount * 5_500 +
     availableMergeCount * 24_000 -
-    (emptyCount <= 2 && availableMergeCount === 0 ? 350_000 : 0) -
-    (emptyCount === 1 && availableMergeCount <= 1 ? 200_000 : 0);
+    (emptyCount <= 2 && availableMergeCount === 0 ? 300_000 : 0) -
+    (emptyCount === 1 && availableMergeCount <= 1 ? 180_000 : 0);
 
-  // High-tile stepping stones toward Merge 11
   let synergy = 0;
   if (directTenMergeAvailable) {
     synergy += 500_000_000;
@@ -409,11 +400,8 @@ function searchChanceNode(g: number[], depthRemaining: number, lateSpawnPhase: b
   }
   nodesVisited += 1;
   activeCandidateNodes += 1;
-  // Once any 10 has appeared, keep the late phase even if 10+10 later removes both tiles.
   lateSpawnPhase = lateSpawnPhase || containsTen(g);
 
-  // At leaf level (depthRemaining <= 1), evaluate the post-move state directly
-  // or with lightweight sampling so we don't blow 40x evals on a single leaf.
   if (depthRemaining <= 1) {
     return evaluateFlatBoard(g);
   }
@@ -432,8 +420,6 @@ function searchChanceNode(g: number[], depthRemaining: number, lateSpawnPhase: b
   const cached = memo.get(hash);
   if (cached !== undefined) return cached;
 
-  // When many cells are empty at deep levels, stride-sample empty cells deterministically
-  // so the solver can complete deeper plies within the 5,000-node / 25,000-eval budget.
   let cellsToTest = emptyIndices;
   if (numEmpty > 6 && depthRemaining >= 3) {
     cellsToTest = [];
@@ -443,8 +429,6 @@ function searchChanceNode(g: number[], depthRemaining: number, lateSpawnPhase: b
     }
   }
 
-  // Preserve the existing number of representative spawn branches on open boards.
-  // Tight boards use all five values with empirical weighted probabilities.
   const probs = lateSpawnPhase ? POST10_SPAWN_PROBS : PRE10_SPAWN_PROBS;
   const spawnList: readonly number[] = numEmpty <= 4
     ? SPAWN_VALUES
@@ -507,7 +491,6 @@ function searchMaxNode(g: number[], depthRemaining: number, lateSpawnPhase: bool
 }
 
 function getAdaptiveDepth(emptyCount: number): number {
-  // Preserve the current search policy: only boards with <= 3 empty cells reach depth 4.
   return emptyCount <= 3 ? 4 : 3;
 }
 
@@ -537,7 +520,6 @@ export function getBestMove(board: Board, hasReached10Before = false): SolverRes
 
   for (const direction of DIRECTIONS) {
     const result = applyMove(board, direction);
-    // Priority 1: Any move that immediately reaches Merge 11 wins on the spot
     if (result.reached11) {
       return { bestMove: direction, isGameOver: false };
     }
@@ -554,9 +536,7 @@ export function getBestMove(board: Board, hasReached10Before = false): SolverRes
   if (candidates.length === 0) {
     return { bestMove: null, isGameOver: isGameOver(board) };
   }
-  // Global budget is allocated per root candidate and iterative-deepening level.
 
-  // Sort candidates descending by their immediate heuristic evaluation (Move Ordering)
   candidates.sort((a, b) => b.initialScore - a.initialScore);
 
   if (candidates.length === 1) {
@@ -569,10 +549,6 @@ export function getBestMove(board: Board, hasReached10Before = false): SolverRes
   let bestMove: Direction = candidates[0].direction;
 
   memo.clear();
-  // Iterative deepening starting from depth 2 (which includes spawn + player response).
-  // Each root candidate receives a fresh per-level node/evaluation budget, so work spent on
-  // a shallower iteration cannot consume its allowance at a deeper iteration. The total call
-  // budget scales with legal root moves and the number of iterative-deepening levels.
   for (let depth = 2; depth <= maxDepth; depth++) {
     let depthBestMove: Direction = candidates[0].direction;
     let depthBestScore = -Infinity;
@@ -598,7 +574,6 @@ export function getBestMove(board: Board, hasReached10Before = false): SolverRes
 
     bestMove = depthBestMove;
 
-    // Re-order candidates based on the latest completed depth to keep best move first
     candidates.sort((a, b) =>
       a.direction === bestMove ? -1 : b.direction === bestMove ? 1 : 0
     );
